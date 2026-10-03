@@ -20,6 +20,7 @@ dependencies = [
 [dependency-groups]
 # Dockerfile target `api`
 api = [
+    "autogluon-tabular[lightgbm]>=1.1",
     "uvicorn[standard]>=0.30",
 ]
 # Dockerfile target `jupyter`

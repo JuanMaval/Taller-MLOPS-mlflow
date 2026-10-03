@@ -40,7 +40,11 @@ ENV PYTHONUNBUFFERED=1 \
     PATH="/app/.venv/bin:$PATH" \
     PYTHONPATH="/app/src"
 
-RUN groupadd -g 1000 app && useradd -u 1000 -g 1000 -m -s /bin/bash app
+# libgomp1: OpenMP runtime loaded by LightGBM (the registered AutoGluon model) at import time.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -g 1000 app && useradd -u 1000 -g 1000 -m -s /bin/bash app
 
 WORKDIR /app
 COPY --from=deps-api /app/.venv /app/.venv
