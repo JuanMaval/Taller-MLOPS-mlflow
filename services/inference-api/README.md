@@ -21,20 +21,32 @@ inside the registered model, so callers never replicate them.
 
 ```bash
 curl -s -X POST http://localhost:8000/predict -H 'Content-Type: application/json' -d '{
-  "instances": [{
-    "elevation": 2596, "aspect": 51, "slope": 3,
-    "horizontal_distance_to_hydrology": 258, "vertical_distance_to_hydrology": 0,
-    "horizontal_distance_to_roadways": 510,
-    "hillshade_9am": 221, "hillshade_noon": 232, "hillshade_3pm": 148,
-    "horizontal_distance_to_fire_points": 6279,
-    "wilderness_area": "rawah", "soil_type": "c7745"
-  }]
+  "instances": [
+    {"elevation": 3037, "aspect": 330, "slope": 12,
+     "horizontal_distance_to_hydrology": 492, "vertical_distance_to_hydrology": -83,
+     "horizontal_distance_to_roadways": 1806,
+     "hillshade_9am": 192, "hillshade_noon": 226, "hillshade_3pm": 173,
+     "horizontal_distance_to_fire_points": 2023,
+     "wilderness_area": "commanche", "soil_type": "c7756"},
+    {"elevation": 2616, "aspect": 176, "slope": 27,
+     "horizontal_distance_to_hydrology": 351, "vertical_distance_to_hydrology": 88,
+     "horizontal_distance_to_roadways": 927,
+     "hillshade_9am": 223, "hillshade_noon": 242, "hillshade_3pm": 134,
+     "horizontal_distance_to_fire_points": 1047,
+     "wilderness_area": "commanche", "soil_type": "c2703"}
+  ]
 }'
 ```
 
+Both rows come from the `test` split of `training.covertype_features`
+(true classes 1 and 2). The same payload is the request example in `/docs`.
+
 ```json
 {
-  "predictions": [{"cover_type": 4, "confidence": 0.93}],
+  "predictions": [
+    {"cover_type": 1, "confidence": 0.99996},
+    {"cover_type": 2, "confidence": 0.99998}
+  ],
   "model": {"name": "cubierta-forestal", "alias": "production", "version": "1"}
 }
 ```

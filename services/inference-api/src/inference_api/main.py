@@ -1,11 +1,12 @@
 from contextlib import asynccontextmanager
 
 import pandas as pd
-from fastapi import Depends, FastAPI, HTTPException, Response, status
+from fastapi import Body, Depends, FastAPI, HTTPException, Response, status
 
 from inference_api import __version__
 from inference_api.model import LoadedModel, get_model, try_load
 from inference_api.schemas import (
+    PREDICT_EXAMPLE,
     HealthResponse,
     ModelInfo,
     PredictRequest,
@@ -40,7 +41,18 @@ def health(response: Response, model: LoadedModel | None = Depends(get_model)) -
 
 
 @app.post("/predict", tags=["inference"], response_model=PredictResponse)
-def predict(payload: PredictRequest, model: LoadedModel | None = Depends(get_model)) -> PredictResponse:
+def predict(
+    payload: PredictRequest = Body(
+        openapi_examples={
+            "two-test-rows": {
+                "summary": "Two real rows from the test split",
+                "description": "Expected prediction: cover_type 1 for the first row, 2 for the second.",
+                "value": PREDICT_EXAMPLE,
+            }
+        }
+    ),
+    model: LoadedModel | None = Depends(get_model),
+) -> PredictResponse:
     """Predict the forest cover type for a batch of raw feature rows."""
     if model is None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "model not available in the registry")

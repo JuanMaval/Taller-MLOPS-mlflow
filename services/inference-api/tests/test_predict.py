@@ -82,3 +82,16 @@ def test_health_reports_loaded_model(client: TestClient) -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "model": "cubierta-forestal@production", "version": "7"}
+
+
+def test_openapi_example_is_a_valid_request(client: TestClient) -> None:
+    from inference_api.schemas import PREDICT_EXAMPLE, PredictRequest
+
+    PredictRequest.model_validate(PREDICT_EXAMPLE)  # must not raise
+
+    schema = client.get("/openapi.json").json()
+    body = schema["paths"]["/predict"]["post"]["requestBody"]["content"]["application/json"]
+    assert body["examples"]["two-test-rows"]["value"] == PREDICT_EXAMPLE
+
+    response = client.post("/predict", json=PREDICT_EXAMPLE)
+    assert response.status_code == 200
