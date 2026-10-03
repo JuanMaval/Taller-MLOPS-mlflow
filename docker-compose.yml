@@ -180,6 +180,9 @@ services:
       DATA_DB_NAME: cubierta_forestal
       DATA_DB_USER: app
       DATA_DB_PASSWORD: app
+      # Model Registry target written by the training notebook (same values the API reads)
+      MODEL_NAME: cubierta-forestal
+      MODEL_ALIAS: production
     volumes:
       # Bind mounts to iterate without rebuilding the image
       - ./services/jupyter/notebooks:/workspace/notebooks
