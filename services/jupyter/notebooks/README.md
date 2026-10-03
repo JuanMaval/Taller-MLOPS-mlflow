@@ -26,8 +26,13 @@ docker compose up -d postgres jupyter
 ```
 
 ### B) Local (VS Code)
+Las dependencias viven en `services/inference-api/pyproject.toml` (grupo `jupyter`, fijadas en
+`uv.lock`); `requirements.txt` es sólo referencia. El notebook no instala nada en tiempo de
+ejecución: si falta un paquete, se agrega con `uv add` y se reconstruye la imagen.
 ```bash
-pip install -r requirements.txt
+cd services/inference-api
+uv sync --group jupyter
+uv run jupyter lab ../jupyter/notebooks
 ```
 Define las variables `DATA_DB_*` (o un `.env`) apuntando a tu PostgreSQL (si está en Docker,
 expón el puerto 5432 y usa `DATA_DB_HOST=localhost`). Si no hay base, el notebook usa
