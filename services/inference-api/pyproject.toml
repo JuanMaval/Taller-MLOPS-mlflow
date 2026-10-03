@@ -1,0 +1,43 @@
+[project]
+name = "inference-api"
+version = "0.1.0"
+description = "Cubierta Forestal inference API: serves the model registered in MLflow"
+readme = "README.md"
+authors = [
+    { name = "aristotekean", email = "kean.solano@gmail.com" }
+]
+requires-python = ">=3.12,<3.13"
+# Shared by training (Jupyter) and serving (API) so the model serialised in
+# one is deserialised in the other with identical library versions.
+dependencies = [
+    "fastapi>=0.115",
+    "mlflow>=3.16.1,<4",
+    "pandas>=2.2",
+    "pydantic-settings>=2.6",
+    "scikit-learn>=1.5",
+]
+
+[dependency-groups]
+# Dockerfile target `api`
+api = [
+    "uvicorn[standard]>=0.30",
+]
+# Dockerfile target `jupyter`
+jupyter = [
+    "ipywidgets>=8.1",
+    "jupyterlab>=4.2",
+    "psycopg[binary]>=3.2",
+    "sqlalchemy>=2.0",
+]
+dev = [
+    "httpx>=0.27",
+    "pytest>=8.3",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[build-system]
+requires = ["uv_build>=0.12.14,<0.13.0"]
+build-backend = "uv_build"
