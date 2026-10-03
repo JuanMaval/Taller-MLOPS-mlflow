@@ -68,7 +68,11 @@ ENV PYTHONUNBUFFERED=1 \
     UV_PROJECT_ENVIRONMENT="/app/.venv" \
     UV_LINK_MODE=copy
 
-RUN groupadd -g 1000 app && useradd -u 1000 -g 1000 -m -s /bin/bash app
+# libgomp1: OpenMP runtime loaded by LightGBM (AutoGluon) via ctypes at import time.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -g 1000 app && useradd -u 1000 -g 1000 -m -s /bin/bash app
 
 # uv stays available inside the dev container: `uv add <package>` updates the
 # bind-mounted pyproject.toml / uv.lock and syncs the same venv already on PATH.
