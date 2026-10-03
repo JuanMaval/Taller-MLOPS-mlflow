@@ -8,6 +8,7 @@ scikit-learn>=1.4.0      # métricas (+ fetch_covtype como respaldo fuera del st
 pandas>=2.2.0
 numpy>=1.26.0
 pyarrow>=15.0.0          # results.parquet
+mlflow>=3.1,<4           # registro de experimentos y Model Registry (S2)
 
 # Conexión a PostgreSQL (fuente de datos training.covertype_features):
 SQLAlchemy>=2.1.0

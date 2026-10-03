@@ -2,10 +2,19 @@
 
 Entrena **un solo tipo de modelo** (AutoGluon · LightGBM) con **25 configuraciones de
 hiperparámetros** (25 experimentos) leyendo los datos **ya cargados** en PostgreSQL
-(`training.covertype_features`) y deja los resultados **listos para MLflow**.
+(`training.covertype_features`) y **registra cada experimento en MLflow**.
 
-> No implementa MLflow, MinIO ni FastAPI: esos los integran otros servicios. Aquí se produce el
-> bloque **S5 (PostgreSQL) → S4 (Jupyter)** y la salida preparada para **S2 (MLflow)**.
+> Cubre el bloque **S5 (PostgreSQL) → S4 (Jupyter) → S2 (MLflow)**. Cada configuración se registra
+> como un *run* (params, métricas, modelo) y el mejor modelo se publica en el **Model Registry**
+> (`MODEL_NAME` con alias `MODEL_ALIAS=production`), que es lo que carga la Inference API (S6):
+> `models:/<MODEL_NAME>@<MODEL_ALIAS>`. Si no hay servidor MLflow, el notebook corre igual y deja
+> los payloads locales. No implementa S6 (FastAPI) ni el despliegue.
+
+## Conexión con MLflow
+Se activa con las variables (ya inyectadas en el contenedor `jupyter` del `docker-compose`):
+`MLFLOW_TRACKING_URI` (`http://mlflow:5000`), `MLFLOW_S3_ENDPOINT_URL`, `AWS_ACCESS_KEY_ID/SECRET`,
+`MODEL_NAME` (`cubierta-forestal`) y `MODEL_ALIAS` (`production`). Si `MLFLOW_TRACKING_URI` no está
+definido, el registro se omite sin fallar.
 
 ## Fuente de datos
 `training.covertype_features` (snapshot versionado, con columna `split` ya decidida). El notebook
