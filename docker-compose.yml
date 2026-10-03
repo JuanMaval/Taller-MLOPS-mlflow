@@ -137,12 +137,17 @@ services:
       - --artifacts-destination
       - s3://mlflow
       - --serve-artifacts
+      # DNS-rebinding guard: by default only localhost / private IPs pass.
+      # Allow the in-network service name (clients) and the OrbStack domain.
+      - --allowed-hosts
+      - "localhost:*,127.0.0.1:*,mlflow:*,*.orb.local"
     environment:
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
       AWS_ACCESS_KEY_ID: minioadmin
       AWS_SECRET_ACCESS_KEY: minioadmin
     ports:
-      - "5000:5000"
+      # Host port 5001: macOS AirPlay Receiver squats 5000 on the host.
+      - "5001:5000"
     healthcheck:
       test: [ "CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:5000/health', timeout=4)" ]
       interval: 15s
