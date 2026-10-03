@@ -1,14 +1,14 @@
 # Cubierta Forestal MLOps · docker compose
 #
-#   s1 Data API (external, reached through VPN)  --->  s2 Airflow
-#   s2 Airflow  <--->  s3 PostgreSQL              (raw + curated tables)
-#   s3 PostgreSQL  --->  s4 Jupyter               (training reads from the DB)
-#   s4 Jupyter  --->  s5 MinIO                    (publishes trained models)
-#   s5 MinIO  --->  s6 Inference API              (loads the model to serve)
+#   s1 mlflow-db   PostgreSQL  <--->  s2 MLflow        (experiments, runs, registry metadata)
+#   s3 MinIO                   <--->  s2 MLflow        (artifacts: models, metrics, plots)
+#   s4 Jupyter                 <--->  s2 MLflow        (logs runs, registers models)
+#   s4 Jupyter                 <--->  s5 postgres      (training reads the business DB)
+#   s6 Inference API           <--->  s2 MLflow        (loads the registered model to serve)
 #
 # Two isolated Postgres instances, each with its own volume:
-#   - airflow-db : Airflow metadata only (internal, not published to the host)
-#   - postgres   : business database written by the DAGs and read by Jupyter
+#   - mlflow-db : MLflow backend store only (internal, not published to the host)
+#   - postgres  : business database read by Jupyter
 #
 # Jupyter and the Inference API are built from the same Dockerfile / uv.lock
 # (targets `jupyter` and `api`) so the model serialised in training can be
@@ -16,42 +16,18 @@
 
 name: cubierta-forestal
 
-x-airflow-common: &airflow-common
-  image: apache/airflow:3.3.2
-  environment: &airflow-common-env
-    AIRFLOW__CORE__EXECUTOR: LocalExecutor
-    AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
-    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-db:5432/airflow
-    AIRFLOW__CORE__FERNET_KEY: ""
-    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
-    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
-    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
-    AIRFLOW__API_AUTH__JWT_SECRET: change-me-jwt-secret
-    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
-    # s1 · external Data API, reached through the VPN of the host
-    DATA_API_URL: http://data-api.example.internal
-    DATA_API_TOKEN: ""
-    # s3 · project database the DAGs write into
-    DATA_DB_HOST: postgres
-    DATA_DB_PORT: "5432"
-    DATA_DB_NAME: cubierta_forestal
-    DATA_DB_USER: app
-    DATA_DB_PASSWORD: app
-  volumes:
-    - ./services/airflow/dags:/opt/airflow/dags
-    - ./services/airflow/logs:/opt/airflow/logs
-    - ./services/airflow/plugins:/opt/airflow/plugins
-    - ./services/airflow/config:/opt/airflow/config
-  user: "50000:0"
-  depends_on: &airflow-common-depends-on
-    airflow-db:
-      condition: service_healthy
-    postgres:
-      condition: service_healthy
+x-mlflow-client-env: &mlflow-client-env
+  MLFLOW_TRACKING_URI: http://mlflow:5000
+  # Artifacts are proxied by the server (--serve-artifacts), so clients only
+  # need the tracking URI. The S3 variables are kept so direct access to the
+  # bucket also works from a notebook when needed.
+  MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+  AWS_ACCESS_KEY_ID: minioadmin
+  AWS_SECRET_ACCESS_KEY: minioadmin
 
 services:
   # ------------------------------------------------------------------------- #
-  # s3 · PostgreSQL (business database)
+  # s5 · PostgreSQL (business database)
   # ------------------------------------------------------------------------- #
   postgres:
     image: postgres:16
@@ -66,6 +42,8 @@ services:
       - postgres-data:/var/lib/postgresql/data
       # Optional schema/seed .sql files, applied once on an empty volume
       - ./services/postgres/init:/docker-entrypoint-initdb.d:ro
+      # Custom-format pg_dump restored by init/002_restore_backup.sh
+      - ./services/postgres/backup:/backup:ro
     healthcheck:
       test: [ "CMD", "pg_isready", "-U", "app", "-d", "cubierta_forestal" ]
       interval: 10s
@@ -75,19 +53,19 @@ services:
     restart: unless-stopped
 
   # ------------------------------------------------------------------------- #
-  # Airflow metadata database (internal to the stack, separate volume)
+  # s1 · PostgreSQL (MLflow backend store, internal to the stack, own volume)
   # ------------------------------------------------------------------------- #
-  airflow-db:
+  mlflow-db:
     image: postgres:16
-    container_name: cf-airflow-db
+    container_name: cf-mlflow-db
     environment:
-      POSTGRES_DB: airflow
-      POSTGRES_USER: airflow
-      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: mlflow
+      POSTGRES_USER: mlflow
+      POSTGRES_PASSWORD: mlflow
     volumes:
-      - airflow-db-data:/var/lib/postgresql/data
+      - mlflow-db-data:/var/lib/postgresql/data
     healthcheck:
-      test: [ "CMD", "pg_isready", "-U", "airflow", "-d", "airflow" ]
+      test: [ "CMD", "pg_isready", "-U", "mlflow", "-d", "mlflow" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -95,94 +73,7 @@ services:
     restart: unless-stopped
 
   # ------------------------------------------------------------------------- #
-  # s2 · Airflow (LocalExecutor: api-server + scheduler + dag-processor + triggerer)
-  # ------------------------------------------------------------------------- #
-  airflow-init:
-    <<: *airflow-common
-    container_name: cf-airflow-init
-    entrypoint: /bin/bash
-    command:
-      - -c
-      - |
-        mkdir -p /opt/airflow/{logs,dags,plugins,config}
-        chown -R "50000:0" /opt/airflow/{logs,dags,plugins,config}
-        exec /entrypoint airflow version
-    environment:
-      <<: *airflow-common-env
-      _AIRFLOW_DB_MIGRATE: "true"
-      _AIRFLOW_WWW_USER_CREATE: "true"
-      _AIRFLOW_WWW_USER_USERNAME: airflow
-      _AIRFLOW_WWW_USER_PASSWORD: airflow
-    user: "0:0"
-
-  airflow-apiserver:
-    <<: *airflow-common
-    container_name: cf-airflow-apiserver
-    command: api-server
-    ports:
-      - "8080:8080"
-    healthcheck:
-      test: [ "CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health" ]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
-    restart: unless-stopped
-    depends_on:
-      <<: *airflow-common-depends-on
-      airflow-init:
-        condition: service_completed_successfully
-
-  airflow-scheduler:
-    <<: *airflow-common
-    container_name: cf-airflow-scheduler
-    command: scheduler
-    healthcheck:
-      test: [ "CMD-SHELL", 'airflow jobs check --job-type SchedulerJob --hostname "$${HOSTNAME}"' ]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
-    restart: unless-stopped
-    depends_on:
-      <<: *airflow-common-depends-on
-      airflow-init:
-        condition: service_completed_successfully
-
-  airflow-dag-processor:
-    <<: *airflow-common
-    container_name: cf-airflow-dag-processor
-    command: dag-processor
-    healthcheck:
-      test: [ "CMD-SHELL", 'airflow jobs check --job-type DagProcessorJob --hostname "$${HOSTNAME}"' ]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
-    restart: unless-stopped
-    depends_on:
-      <<: *airflow-common-depends-on
-      airflow-init:
-        condition: service_completed_successfully
-
-  airflow-triggerer:
-    <<: *airflow-common
-    container_name: cf-airflow-triggerer
-    command: triggerer
-    healthcheck:
-      test: [ "CMD-SHELL", 'airflow jobs check --job-type TriggererJob --hostname "$${HOSTNAME}"' ]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
-    restart: unless-stopped
-    depends_on:
-      <<: *airflow-common-depends-on
-      airflow-init:
-        condition: service_completed_successfully
-
-  # ------------------------------------------------------------------------- #
-  # s5 · MinIO (model registry / artifact store)
+  # s3 · MinIO (artifact store for MLflow)
   #
   # Chainguard build of MinIO (MinIO removed its own public images in 2026-09).
   # Distroless-style image: runs as uid 65532, ships `minio` and `mc` only.
@@ -207,26 +98,66 @@ services:
       start_period: 30s
     restart: unless-stopped
 
-  # One-shot: the official image does not create buckets on start, so this
-  # reuses the already-built api image (it ships the minio client) to create
-  # the models bucket before Jupyter and the Inference API come up.
+  # One-shot: MinIO does not create buckets on start. Reuse the same image
+  # (it ships `mc`) to create the MLflow artifact bucket before the server
+  # comes up.
   minio-init:
-    image: cubierta-forestal-api:0.1.0
+    image: cgr.dev/chainguard/minio:latest
     container_name: cf-minio-init
-    entrypoint: [ "python", "-c" ]
+    entrypoint: [ "/bin/sh", "-c" ]
     command:
       - |
-        from minio import Minio
-        client = Minio("minio:9000", "minioadmin", "minioadmin", secure=False)
-        if not client.bucket_exists("models"):
-            client.make_bucket("models")
-        print("bucket ready: models")
+        mc alias set local http://minio:9000 minioadmin minioadmin
+        mc mb --ignore-existing local/mlflow
+        echo "bucket ready: mlflow"
     depends_on:
       minio:
         condition: service_healthy
 
   # ------------------------------------------------------------------------- #
-  # s4 · Jupyter (training: reads Postgres, publishes models to MinIO)
+  # s2 · MLflow (tracking server + model registry)
+  #
+  # Backend store: mlflow-db. Artifacts: MinIO bucket `mlflow`, proxied through
+  # the server so clients never need bucket credentials.
+  # ------------------------------------------------------------------------- #
+  mlflow:
+    build:
+      context: ./services/mlflow
+    image: cubierta-forestal-mlflow:0.1.0
+    container_name: cf-mlflow
+    command:
+      - mlflow
+      - server
+      - --host
+      - 0.0.0.0
+      - --port
+      - "5000"
+      - --backend-store-uri
+      - postgresql+psycopg2://mlflow:mlflow@mlflow-db:5432/mlflow
+      - --artifacts-destination
+      - s3://mlflow
+      - --serve-artifacts
+    environment:
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+    ports:
+      - "5000:5000"
+    healthcheck:
+      test: [ "CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:5000/health', timeout=4)" ]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    depends_on:
+      mlflow-db:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------------- #
+  # s4 · Jupyter (training: reads postgres, logs runs and models to MLflow)
   # ------------------------------------------------------------------------- #
   jupyter:
     build:
@@ -237,16 +168,13 @@ services:
     ports:
       - "8888:8888"
     environment:
+      <<: *mlflow-client-env
       JUPYTER_TOKEN: cubierta
       DATA_DB_HOST: postgres
       DATA_DB_PORT: "5432"
       DATA_DB_NAME: cubierta_forestal
       DATA_DB_USER: app
       DATA_DB_PASSWORD: app
-      MINIO_ENDPOINT: http://minio:9000
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: minioadmin
-      MODELS_BUCKET: models
     volumes:
       # Bind mounts to iterate without rebuilding the image
       - ./services/jupyter/notebooks:/workspace/notebooks
@@ -256,12 +184,12 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      minio-init:
-        condition: service_completed_successfully
+      mlflow:
+        condition: service_healthy
     restart: unless-stopped
 
   # ------------------------------------------------------------------------- #
-  # s6 · Inference API (serves the model published in MinIO)
+  # s6 · Inference API (serves the model registered in MLflow)
   # ------------------------------------------------------------------------- #
   inference-api:
     build:
@@ -272,20 +200,19 @@ services:
     ports:
       - "8000:8000"
     environment:
-      MINIO_ENDPOINT: http://minio:9000
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: minioadmin
-      MODELS_BUCKET: models
+      <<: *mlflow-client-env
       MODEL_NAME: cubierta-forestal
+      # Registry alias resolved at startup: models:/<MODEL_NAME>@<MODEL_ALIAS>
+      MODEL_ALIAS: production
     depends_on:
-      minio-init:
-        condition: service_completed_successfully
+      mlflow:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
   postgres-data:
     name: cubierta_forestal_postgres
-  airflow-db-data:
-    name: cubierta_forestal_airflow_db
+  mlflow-db-data:
+    name: cubierta_forestal_mlflow_db
   minio-data:
     name: cubierta_forestal_minio
