@@ -4,13 +4,15 @@
 #   s3 MinIO                   <--->  s2 MLflow        (artifacts: models, metrics, plots)
 #   s6 Inference API           <--->  s2 MLflow        (loads the registered model to serve)
 #   s7 Nginx                   ---->  s6 API x N       (load balancer, only public API port)
-#   s8 Locust                  ---->  s7 Nginx         (load test, profile `loadtest`)
 #
 # Deployment on a VM (copy the repo, then from its root):
-#   docker compose up -d                          # whole stack, API_REPLICAS=3
-#   docker compose --profile loadtest up -d       # + Locust UI on :8089
+#   API_REPLICAS=1 docker compose up -d           # one replica, 1 CPU / 1 GB
+#   API_REPLICAS=3 docker compose up -d           # scale to three (Nginx picks them up)
 # Tunables (env or .env): API_REPLICAS, API_CPUS, API_MEMORY, NGINX_PORT,
-# LOCUST_WORKERS, LOCUST_HOST, MLFLOW_ALLOWED_HOSTS.
+# MLFLOW_ALLOWED_HOSTS.
+#
+# Locust is NOT part of this stack: the load generator runs on another host
+# with docker-compose.locust.yml, so it does not compete with the API for CPU.
 #
 # Serving-only stack: training (Jupyter + business Postgres) is not deployed.
 # The API serves the model already registered in MLflow, so the volumes
@@ -193,38 +195,6 @@ services:
       inference-api:
         condition: service_healthy
     restart: unless-stopped
-
-  # ------------------------------------------------------------------------- #
-  # s8 · Locust (load test through Nginx) · profile `loadtest`
-  #
-  #   docker compose --profile loadtest up -d
-  #
-  # Not started by default: on the same VM the load generator competes with
-  # the API for CPU. LOCUST_HOST lets it target another machine.
-  # ------------------------------------------------------------------------- #
-  locust-master:
-    image: locustio/locust:2.43.3
-    container_name: cf-locust-master
-    profiles: [ "loadtest" ]
-    command: -f /mnt/locust/locustfile.py --master --host ${LOCUST_HOST:-http://nginx}
-    ports:
-      - "8089:8089"
-    volumes:
-      - ./services/locust:/mnt/locust:ro
-    depends_on:
-      nginx:
-        condition: service_healthy
-
-  locust-worker:
-    image: locustio/locust:2.43.3
-    profiles: [ "loadtest" ]
-    command: -f /mnt/locust/locustfile.py --worker --master-host locust-master
-    volumes:
-      - ./services/locust:/mnt/locust:ro
-    deploy:
-      replicas: ${LOCUST_WORKERS:-2}
-    depends_on:
-      - locust-master
 
 volumes:
   mlflow-db-data:

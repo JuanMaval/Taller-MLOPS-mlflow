@@ -43,3 +43,6 @@ htmlcov/
 # Airflow runtime logs (bind mount, written by the containers)
 services/airflow/logs/*
 !services/airflow/logs/.keep
+
+# Locust CSV output (docker-compose.locust.yml)
+results/
