@@ -19,10 +19,10 @@
 # under the `production` alias the API replicas exit and restart.
 #
 # All images are published on Docker Hub (DOCKERHUB_USER, default
-# `juanmava`); nothing is built on the VM.
-# To publish a new API image:
-#   docker build --target api -t juanmava/cubierta-forestal-api:0.1.1 .
-#   docker push juanmava/cubierta-forestal-api:0.1.1
+# `juanmava`) for linux/amd64 and linux/arm64; nothing is built on the VM.
+# Publish with scripts/publish-images.sh (tags below + `latest`). A plain
+# `docker build && docker push` from a Mac publishes arm64 only and the
+# image will not run on an amd64 VM.
 
 name: cubierta-forestal
 
