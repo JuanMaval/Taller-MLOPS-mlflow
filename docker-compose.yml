@@ -5,6 +5,14 @@
 #   s4 Jupyter                 <--->  s2 MLflow        (logs runs, registers models)
 #   s4 Jupyter                 <--->  s5 postgres      (training reads the business DB)
 #   s6 Inference API           <--->  s2 MLflow        (loads the registered model to serve)
+#   s7 Nginx                   ---->  s6 API x N       (load balancer, only public API port)
+#   s8 Locust                  ---->  s7 Nginx         (load test, profile `loadtest`)
+#
+# Deployment on a VM (copy the repo, then from its root):
+#   docker compose up -d                          # whole stack, API_REPLICAS=3
+#   docker compose --profile loadtest up -d       # + Locust UI on :8089
+# Tunables (env or .env): API_REPLICAS, API_CPUS, API_MEMORY, NGINX_PORT,
+# LOCUST_WORKERS, LOCUST_HOST, MLFLOW_ALLOWED_HOSTS.
 #
 # Two isolated Postgres instances, each with its own volume:
 #   - mlflow-db : MLflow backend store only (internal, not published to the host)
@@ -13,6 +21,12 @@
 # Jupyter and the Inference API are built from the same Dockerfile / uv.lock
 # (targets `jupyter` and `api`) so the model serialised in training can be
 # deserialised in serving with identical library versions.
+#
+# MLflow and the Inference API run the images published on Docker Hub
+# (DOCKERHUB_USER, default `juanmava`). Jupyter is still built locally.
+# To publish a new API image:
+#   docker build --target api -t juanmava/cubierta-forestal-api:0.1.1 .
+#   docker push juanmava/cubierta-forestal-api:0.1.1
 
 name: cubierta-forestal
 
@@ -62,6 +76,8 @@ services:
       POSTGRES_DB: mlflow
       POSTGRES_USER: mlflow
       POSTGRES_PASSWORD: mlflow
+    ports:
+      - "5431:5432"
     volumes:
       - mlflow-db-data:/var/lib/postgresql/data
     healthcheck:
@@ -121,9 +137,8 @@ services:
   # the server so clients never need bucket credentials.
   # ------------------------------------------------------------------------- #
   mlflow:
-    build:
-      context: ./services/mlflow
-    image: cubierta-forestal-mlflow:0.1.0
+    image: ${DOCKERHUB_USER:-juanmava}/cubierta-forestal-mlflow:0.1.0
+    pull_policy: always
     container_name: cf-mlflow
     command:
       - mlflow
@@ -140,7 +155,8 @@ services:
       # DNS-rebinding guard: by default only localhost / private IPs pass.
       # Allow the in-network service name (clients) and the OrbStack domain.
       - --allowed-hosts
-      - "localhost:*,127.0.0.1:*,mlflow:*,*.orb.local"
+      # On a VM add its IP/hostname via MLFLOW_ALLOWED_HOSTS to open the UI.
+      - "localhost:*,127.0.0.1:*,mlflow:*,*.orb.local${MLFLOW_ALLOWED_HOSTS:+,${MLFLOW_ALLOWED_HOSTS}}"
     environment:
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
       AWS_ACCESS_KEY_ID: minioadmin
@@ -195,24 +211,82 @@ services:
 
   # ------------------------------------------------------------------------- #
   # s6 · Inference API (serves the model registered in MLflow)
+  #
+  # Several replicas behind Nginx: no container_name and no host port, so
+  # compose can scale it. Only reachable from the host through Nginx.
   # ------------------------------------------------------------------------- #
   inference-api:
-    build:
-      context: .
-      target: api
-    image: cubierta-forestal-api:0.1.0
-    container_name: cf-inference-api
-    ports:
-      - "8000:8000"
+    image: ${DOCKERHUB_USER:-juanmava}/cubierta-forestal-api:0.1.1
+    pull_policy: always
+    expose:
+      - "8000"
     environment:
       <<: *mlflow-client-env
       MODEL_NAME: cubierta-forestal
       # Registry alias resolved at startup: models:/<MODEL_NAME>@<MODEL_ALIAS>
       MODEL_ALIAS: production
+    deploy:
+      replicas: ${API_REPLICAS:-3}
+      resources:
+        limits:
+          cpus: "${API_CPUS:-1}"
+          memory: ${API_MEMORY:-1g}
     depends_on:
       mlflow:
         condition: service_healthy
     restart: unless-stopped
+
+  # ------------------------------------------------------------------------- #
+  # s7 · Nginx (load balancer, single entry point to the Inference API)
+  # ------------------------------------------------------------------------- #
+  nginx:
+    image: nginx:1.28-alpine
+    container_name: cf-nginx
+    ports:
+      - "${NGINX_PORT:-80}:80"
+    volumes:
+      - ./services/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    healthcheck:
+      test: [ "CMD", "wget", "-qO-", "http://127.0.0.1/nginx-health" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      inference-api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------------- #
+  # s8 · Locust (load test through Nginx) · profile `loadtest`
+  #
+  #   docker compose --profile loadtest up -d
+  #
+  # Not started by default: on the same VM the load generator competes with
+  # the API for CPU. LOCUST_HOST lets it target another machine.
+  # ------------------------------------------------------------------------- #
+  locust-master:
+    image: locustio/locust:2.43.3
+    container_name: cf-locust-master
+    profiles: [ "loadtest" ]
+    command: -f /mnt/locust/locustfile.py --master --host ${LOCUST_HOST:-http://nginx}
+    ports:
+      - "8089:8089"
+    volumes:
+      - ./services/locust:/mnt/locust:ro
+    depends_on:
+      nginx:
+        condition: service_healthy
+
+  locust-worker:
+    image: locustio/locust:2.43.3
+    profiles: [ "loadtest" ]
+    command: -f /mnt/locust/locustfile.py --worker --master-host locust-master
+    volumes:
+      - ./services/locust:/mnt/locust:ro
+    deploy:
+      replicas: ${LOCUST_WORKERS:-2}
+    depends_on:
+      - locust-master
 
 volumes:
   postgres-data:

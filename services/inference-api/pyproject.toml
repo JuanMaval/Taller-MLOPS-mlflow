@@ -1,6 +1,6 @@
 [project]
 name = "inference-api"
-version = "0.1.0"
+version = "0.1.1"
 description = "Cubierta Forestal inference API: serves the model registered in MLflow"
 readme = "README.md"
 authors = [
@@ -10,6 +10,9 @@ requires-python = ">=3.12,<3.13"
 # Shared by training (Jupyter) and serving (API) so the model serialised in
 # one is deserialised in the other with identical library versions.
 dependencies = [
+    # AutoML for training; also needed at serving time to load the predictor.
+    # Only the tree/KNN backends: no torch/fastai/xgboost to keep images small.
+    "autogluon-tabular[catboost,lightgbm]>=1.4",
     "fastapi>=0.115",
     "mlflow>=3.16.1,<4",
     "pandas>=2.2",

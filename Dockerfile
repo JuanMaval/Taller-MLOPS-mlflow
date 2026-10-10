@@ -40,6 +40,11 @@ ENV PYTHONUNBUFFERED=1 \
     PATH="/app/.venv/bin:$PATH" \
     PYTHONPATH="/app/src"
 
+# libgomp1: OpenMP runtime required by LightGBM (AutoGluon GBM models)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN groupadd -g 1000 app && useradd -u 1000 -g 1000 -m -s /bin/bash app
 
 WORKDIR /app
@@ -67,6 +72,11 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONPATH="/workspace/src" \
     UV_PROJECT_ENVIRONMENT="/app/.venv" \
     UV_LINK_MODE=copy
+
+# libgomp1: OpenMP runtime required by LightGBM (AutoGluon GBM models)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd -g 1000 app && useradd -u 1000 -g 1000 -m -s /bin/bash app
 
