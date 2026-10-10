@@ -2,8 +2,6 @@
 #
 #   s1 mlflow-db   PostgreSQL  <--->  s2 MLflow        (experiments, runs, registry metadata)
 #   s3 MinIO                   <--->  s2 MLflow        (artifacts: models, metrics, plots)
-#   s4 Jupyter                 <--->  s2 MLflow        (logs runs, registers models)
-#   s4 Jupyter                 <--->  s5 postgres      (training reads the business DB)
 #   s6 Inference API           <--->  s2 MLflow        (loads the registered model to serve)
 #   s7 Nginx                   ---->  s6 API x N       (load balancer, only public API port)
 #   s8 Locust                  ---->  s7 Nginx         (load test, profile `loadtest`)
@@ -14,16 +12,14 @@
 # Tunables (env or .env): API_REPLICAS, API_CPUS, API_MEMORY, NGINX_PORT,
 # LOCUST_WORKERS, LOCUST_HOST, MLFLOW_ALLOWED_HOSTS.
 #
-# Two isolated Postgres instances, each with its own volume:
-#   - mlflow-db : MLflow backend store only (internal, not published to the host)
-#   - postgres  : business database read by Jupyter
+# Serving-only stack: training (Jupyter + business Postgres) is not deployed.
+# The API serves the model already registered in MLflow, so the volumes
+# cubierta_forestal_mlflow_db and cubierta_forestal_minio must contain it
+# (copy them from the machine where the model was trained). Without a model
+# under the `production` alias the API replicas exit and restart.
 #
-# Jupyter and the Inference API are built from the same Dockerfile / uv.lock
-# (targets `jupyter` and `api`) so the model serialised in training can be
-# deserialised in serving with identical library versions.
-#
-# MLflow and the Inference API run the images published on Docker Hub
-# (DOCKERHUB_USER, default `juanmava`). Jupyter is still built locally.
+# All images are published on Docker Hub (DOCKERHUB_USER, default
+# `juanmava`); nothing is built on the VM.
 # To publish a new API image:
 #   docker build --target api -t juanmava/cubierta-forestal-api:0.1.1 .
 #   docker push juanmava/cubierta-forestal-api:0.1.1
@@ -34,38 +30,12 @@ x-mlflow-client-env: &mlflow-client-env
   MLFLOW_TRACKING_URI: http://mlflow:5000
   # Artifacts are proxied by the server (--serve-artifacts), so clients only
   # need the tracking URI. The S3 variables are kept so direct access to the
-  # bucket also works from a notebook when needed.
+  # bucket also works when needed.
   MLFLOW_S3_ENDPOINT_URL: http://minio:9000
   AWS_ACCESS_KEY_ID: minioadmin
   AWS_SECRET_ACCESS_KEY: minioadmin
 
 services:
-  # ------------------------------------------------------------------------- #
-  # s5 · PostgreSQL (business database)
-  # ------------------------------------------------------------------------- #
-  postgres:
-    image: postgres:16
-    container_name: cf-postgres
-    environment:
-      POSTGRES_DB: cubierta_forestal
-      POSTGRES_USER: app
-      POSTGRES_PASSWORD: app
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-      # Optional schema/seed .sql files, applied once on an empty volume
-      - ./services/postgres/init:/docker-entrypoint-initdb.d:ro
-      # Custom-format pg_dump restored by init/002_restore_backup.sh
-      - ./services/postgres/backup:/backup:ro
-    healthcheck:
-      test: [ "CMD", "pg_isready", "-U", "app", "-d", "cubierta_forestal" ]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 5s
-    restart: unless-stopped
-
   # ------------------------------------------------------------------------- #
   # s1 · PostgreSQL (MLflow backend store, internal to the stack, own volume)
   # ------------------------------------------------------------------------- #
@@ -178,38 +148,6 @@ services:
     restart: unless-stopped
 
   # ------------------------------------------------------------------------- #
-  # s4 · Jupyter (training: reads postgres, logs runs and models to MLflow)
-  # ------------------------------------------------------------------------- #
-  jupyter:
-    build:
-      context: .
-      target: jupyter
-    image: cubierta-forestal-jupyter:0.1.0
-    container_name: cf-jupyter
-    ports:
-      - "8888:8888"
-    environment:
-      <<: *mlflow-client-env
-      JUPYTER_TOKEN: cubierta
-      DATA_DB_HOST: postgres
-      DATA_DB_PORT: "5432"
-      DATA_DB_NAME: cubierta_forestal
-      DATA_DB_USER: app
-      DATA_DB_PASSWORD: app
-    volumes:
-      # Bind mounts to iterate without rebuilding the image
-      - ./services/jupyter/notebooks:/workspace/notebooks
-      - ./services/inference-api/src:/workspace/src
-      - ./services/inference-api/pyproject.toml:/workspace/pyproject.toml
-      - ./services/inference-api/uv.lock:/workspace/uv.lock
-    depends_on:
-      postgres:
-        condition: service_healthy
-      mlflow:
-        condition: service_healthy
-    restart: unless-stopped
-
-  # ------------------------------------------------------------------------- #
   # s6 · Inference API (serves the model registered in MLflow)
   #
   # Several replicas behind Nginx: no container_name and no host port, so
@@ -289,8 +227,6 @@ services:
       - locust-master
 
 volumes:
-  postgres-data:
-    name: cubierta_forestal_postgres
   mlflow-db-data:
     name: cubierta_forestal_mlflow_db
   minio-data:
